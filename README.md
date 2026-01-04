@@ -37,3 +37,15 @@ or use it from the command line. The id of the extension is automatically availa
 or for older versions of Inkscape:
 
 > `inkscape -g --verb com.klowner.filter.apply_transform test.svg`
+
+## Changes
+
+This version includes a number of improvements and bug fixes from the original repository, including:
+
+*   **Text and Tspan Transformation:** Now correctly applies transformations to `text` and `tspan` elements, including scaling of font size.
+*   **Rectangle Scaling Fix:** Corrected the scaling logic for rectangles.
+*   **Stroke Width Scaling Fix:** Improved stroke width scaling to handle both `style` and direct attributes.
+*   **ValueError Fix:** Made the `scaleMultiple` function more robust to prevent a `ValueError`.
+*   **Improved Circle and Ellipse Handling:** Simple transformations (translation and uniform scaling) are now applied to circles and ellipses without issuing a warning. Warnings are only shown for complex transformations that might distort the shape.
+*   **clipPath and linearGradient Handling:** Added basic handling for `clipPath` and `linearGradient` elements. The extension will now apply the transform to the element and issue a warning.
+*   **Testing:** The extension is now tested, and all tests are passing.
