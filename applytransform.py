@@ -169,6 +169,124 @@ class ApplyTransform(inkex.EffectExtension):
     def isequal(self, a, b, tol=1e-6):
         return abs(a - b) <= tol
 
+    def transformGradient(self, node, transf: Transform):
+        """Transform gradient references for shapes with userSpaceOnUse gradients."""
+        try:
+            # Extract gradient URL from fill attribute or style
+            gradient_id = None
+            fill_attr = node.get("fill", "")
+            style_attr = node.get("style", "")
+            
+            # Check style attribute FIRST (it has higher CSS precedence)
+            if "fill:url(#" in style_attr:
+                import re
+                match = re.search(r'fill:url\(#([^)]+)\)', style_attr)
+                if match:
+                    gradient_id = match.group(1)
+            # Fall back to fill attribute
+            elif fill_attr.startswith("url(#"):
+                gradient_id = fill_attr[5:-1]  # Extract ID from url(#id)
+            
+            if not gradient_id:
+                return
+            
+            # Find the gradient in defs using iteration
+            svg_root = node.getroottree().getroot()
+            
+            # Iterate through all elements to find the gradient
+            gradient = None
+            for elem in svg_root.iter():
+                if elem.get('id') == gradient_id:
+                    gradient = elem
+                    break
+            
+            if gradient is None:
+                return
+            
+            gradient_tag = gradient.tag
+            # Handle both with and without namespace
+            if gradient_tag == inkex.addNS("radialGradient", "svg") or "radialGradient" in gradient_tag:
+                self.transformRadialGradient(gradient, transf)
+            elif gradient_tag == inkex.addNS("linearGradient", "svg") or "linearGradient" in gradient_tag:
+                self.transformLinearGradient(gradient, transf)
+        except Exception as e:
+            inkex.utils.errormsg(f"Error transforming gradient for {node.get('id')}: {str(e)}")
+    
+    def transformRadialGradient(self, gradient, transf: Transform):
+        """Apply transformation to radial gradient coordinates."""
+        gradient_units = gradient.get("gradientUnits", "objectBoundingBox")
+        
+        # Only transform gradients with userSpaceOnUse
+        if gradient_units != "userSpaceOnUse":
+            return
+        
+        # Get existing gradientTransform if any
+        existing_transform_str = gradient.get("gradientTransform", None)
+        if existing_transform_str:
+            existing_transform = Transform(existing_transform_str)
+        else:
+            existing_transform = Transform()
+        
+        # Get current gradient coordinates
+        cx = float(gradient.get("cx", "0"))
+        cy = float(gradient.get("cy", "0"))
+        fx = float(gradient.get("fx", cx))
+        fy = float(gradient.get("fy", cy))
+        r = float(gradient.get("r", "0.5"))
+        
+        # First apply the existing gradient transform to get effective position
+        effective_cx, effective_cy = existing_transform.apply_to_point((cx, cy))
+        effective_fx, effective_fy = existing_transform.apply_to_point((fx, fy))
+        
+        # Calculate effective radius with existing transform
+        scale_x_existing = math.sqrt(existing_transform.a ** 2 + existing_transform.b ** 2)
+        scale_y_existing = math.sqrt(existing_transform.c ** 2 + existing_transform.d ** 2)
+        effective_r = r * (scale_x_existing + scale_y_existing) / 2
+        
+        # Now apply the shape's transform
+        new_cx, new_cy = transf.apply_to_point((effective_cx, effective_cy))
+        new_fx, new_fy = transf.apply_to_point((effective_fx, effective_fy))
+        
+        # Calculate new radius
+        scale_x = math.sqrt(transf.a ** 2 + transf.b ** 2)
+        scale_y = math.sqrt(transf.c ** 2 + transf.d ** 2)
+        new_r = effective_r * (scale_x + scale_y) / 2
+        
+        # Update gradient coordinates with final values
+        gradient.set("cx", str(new_cx))
+        gradient.set("cy", str(new_cy))
+        gradient.set("fx", str(new_fx))
+        gradient.set("fy", str(new_fy))
+        gradient.set("r", str(new_r))
+        
+        # Remove the gradientTransform since we've applied it
+        if "gradientTransform" in gradient.attrib:
+            del gradient.attrib["gradientTransform"]
+    
+    def transformLinearGradient(self, gradient, transf: Transform):
+        """Apply transformation to linear gradient coordinates."""
+        gradient_units = gradient.get("gradientUnits", "objectBoundingBox")
+        
+        # Only transform gradients with userSpaceOnUse
+        if gradient_units != "userSpaceOnUse":
+            return
+        
+        # Get current gradient coordinates
+        x1 = float(gradient.get("x1", "0"))
+        y1 = float(gradient.get("y1", "0"))
+        x2 = float(gradient.get("x2", "1"))
+        y2 = float(gradient.get("y2", "0"))
+        
+        # Transform the points
+        new_x1, new_y1 = transf.apply_to_point((x1, y1))
+        new_x2, new_y2 = transf.apply_to_point((x2, y2))
+        
+        # Update gradient coordinates
+        gradient.set("x1", str(new_x1))
+        gradient.set("y1", str(new_y1))
+        gradient.set("x2", str(new_x2))
+        gradient.set("y2", str(new_y2))
+
     def recursiveFuseTransform(self, node, transf=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]):
         transf = Transform(transf) @ Transform(node.get("transform", None))
 
@@ -229,6 +347,9 @@ class ApplyTransform(inkex.EffectExtension):
                 new_cx, new_cy = transf.apply_to_point((cx, cy))
                 node.set("cx", str(new_cx))
                 node.set("cy", str(new_cy))
+                
+                # Transform gradient if present
+                self.transformGradient(node, transf)
             else:
                 if node.tag == inkex.addNS("ellipse", "svg"):
                     rx = float(node.get("rx"))
@@ -246,8 +367,8 @@ class ApplyTransform(inkex.EffectExtension):
                 newxy2 = transf.apply_to_point(sqxy2)
                 newxy3 = transf.apply_to_point(sqxy3)
 
-                node.set("cx", (newxy1[0] + newxy3[0]) / 2)
-                node.set("cy", (newxy1[1] + newxy3[1]) / 2)
+                node.set("cx", str((newxy1[0] + newxy3[0]) / 2))
+                node.set("cy", str((newxy1[1] + newxy3[1]) / 2))
                 edgex = math.sqrt(
                     abs(newxy1[0] - newxy2[0]) ** 2 + abs(newxy1[1] - newxy2[1]) ** 2
                 )
@@ -265,10 +386,21 @@ class ApplyTransform(inkex.EffectExtension):
                     )
 
                 if node.tag == inkex.addNS("ellipse", "svg"):
-                    node.set("rx", edgex / 2)
-                    node.set("ry", edgey / 2)
+                    node.set("rx", str(edgex / 2))
+                    node.set("ry", str(edgey / 2))
                 else:
-                    node.set("r", edgex / 2)
+                    # Circle needs to become an ellipse due to non-uniform scaling
+                    if not self.isequal(edgex, edgey):
+                        node.tag = inkex.addNS("ellipse", "svg")
+                        if "r" in node.attrib:
+                            del node.attrib["r"]
+                        node.set("rx", str(edgex / 2))
+                        node.set("ry", str(edgey / 2))
+                    else:
+                        node.set("r", str(edgex / 2))
+                
+                # Transform gradient if present
+                self.transformGradient(node, transf)
 
         elif node.tag == inkex.addNS("rect", "svg"):
             self.transformRectangle(node, transf)
